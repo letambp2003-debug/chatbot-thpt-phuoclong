@@ -17,8 +17,8 @@ app.use(express.urlencoded({ extended: true }));
 // Serve static frontend files
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-// Basic Info API
-app.get('/api/info', (req, res) => {
+// Basic Info API (supports both /api/info and /info for serverless)
+app.get(['/api/info', '/info'], (req, res) => {
   res.json({
     ok: true,
     schoolName: config.SCHOOL_NAME,
@@ -27,10 +27,10 @@ app.get('/api/info', (req, res) => {
   });
 });
 
-// Health check API
-app.get('/api/health', async (req, res) => {
+// Health check API (supports both /api/health and /health)
+app.get(['/api/health', '/health'], async (req, res) => {
   try {
-    const data = await sheetService.fetchSheetData();
+    const data = await sheetService.getSheetData();
     res.json({
       ok: true,
       status: 'healthy',
@@ -47,7 +47,8 @@ app.get('/api/health', async (req, res) => {
 });
 
 // Core Lookup API (Strict 12 digits, server-side only, rate limited)
-app.post('/api/lookup', lookupLimiter, validateCCCD, async (req, res) => {
+// Matches /api/lookup, /lookup, or / to work seamlessly with both Express and Vercel serverless functions
+app.post(['/api/lookup', '/lookup', '/'], lookupLimiter, validateCCCD, async (req, res) => {
   try {
     const result = await sheetService.lookupByCCCD(req.sanitizedCCCD);
     if (!result.ok) {
@@ -72,7 +73,7 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
-// Start server if not required in tests
+// Start server if not required in tests or serverless
 if (require.main === module) {
   app.listen(config.PORT, () => {
     logger.info(`Máy chủ Chatbot THPT Phước Long đang chạy tại: http://localhost:${config.PORT}`);
