@@ -4,10 +4,11 @@ const logger = require('../utils/logger');
 class SheetService {
   constructor() {
     this.sheetId = config.SHEET_ID;
-    this.cacheTTL = config.CACHE_TTL_MS;
+    this.cacheTTL = config.CACHE_TTL_MS || 300000; // 5 minutes
     this.cachedData = null;
     this.lastFetchTime = 0;
     this.fetchPromise = null;
+    this.isRefreshing = false;
   }
 
   getExportUrl() {
@@ -45,7 +46,6 @@ class SheetService {
     }
 
     const headers = this.parseCSVLine(lines[0]);
-    // Find column F (index 5) or find header containing "định danh" / "cccd"
     let idColIndex = 5;
     const foundIndex = headers.findIndex(h => 
       h.toLowerCase().includes('định danh') || h.toLowerCase().includes('cccd')
@@ -66,11 +66,6 @@ class SheetService {
   }
 
   async fetchSheetData() {
-    const now = Date.now();
-    if (this.cachedData && (now - this.lastFetchTime < this.cacheTTL)) {
-      return this.cachedData;
-    }
-
     if (this.fetchPromise) {
       return this.fetchPromise;
     }
@@ -95,12 +90,12 @@ class SheetService {
         const parsed = this.parseCSV(csvText);
         this.cachedData = parsed;
         this.lastFetchTime = Date.now();
-        logger.info(`Đã tải thành công ${parsed.rows.length} hồ sơ học sinh.`);
+        logger.info(`Đã nạp thành công ${parsed.rows.length} hồ sơ học sinh vào bộ nhớ đệm.`);
         return parsed;
       } catch (err) {
-        logger.error('Lỗi khi tải Google Sheet:', err.message);
+        logger.error('Lỗi khi tải dữ liệu từ Google Sheet:', err.message);
         if (this.cachedData) {
-          logger.warn('Sử dụng dữ liệu cache trước đó do lỗi tải mới.');
+          logger.warn('Duy trì dữ liệu bộ nhớ đệm trước đó.');
           return this.cachedData;
         }
         throw err;
@@ -110,6 +105,25 @@ class SheetService {
     })();
 
     return this.fetchPromise;
+  }
+
+  // Stale-while-revalidate: Trả về dữ liệu đệm ngay lập tức nếu có, làm mới ngầm
+  async getSheetData() {
+    const now = Date.now();
+
+    if (this.cachedData) {
+      // Nếu hết hạn TTL và không bận làm mới -> kích hoạt làm mới chạy ngầm
+      if (now - this.lastFetchTime > this.cacheTTL && !this.isRefreshing) {
+        this.isRefreshing = true;
+        this.fetchSheetData()
+          .catch(err => logger.warn('Làm mới ngầm thất bại:', err.message))
+          .finally(() => { this.isRefreshing = false; });
+      }
+      return this.cachedData;
+    }
+
+    // Chưa có dữ liệu lần đầu -> buộc phải tải
+    return await this.fetchSheetData();
   }
 
   async lookupByCCCD(cccd) {
@@ -135,8 +149,9 @@ class SheetService {
 
     let data;
     try {
-      data = await this.fetchSheetData();
+      data = await this.getSheetData();
     } catch (err) {
+      logger.error(`Tra cứu thất bại do nguồn dữ liệu cho CCCD ${masked}:`, err.message);
       return {
         ok: false,
         code: 'DATA_SOURCE_ERROR',
@@ -146,7 +161,7 @@ class SheetService {
 
     const { headers, rows, idColIndex } = data;
 
-    // Exact match on Column F (index 5, string equality, preserve leading zeros)
+    // So khớp chính xác 100% cột F (Số định danh cá nhân)
     const matches = [];
     for (const row of rows) {
       const val = (row[idColIndex] || '').trim();
@@ -156,6 +171,7 @@ class SheetService {
     }
 
     if (matches.length === 0) {
+      logger.info(`Không tìm thấy hồ sơ cho CCCD: ${masked}`);
       return {
         ok: false,
         code: 'NOT_FOUND',
@@ -172,16 +188,17 @@ class SheetService {
       };
     }
 
-    // Exactly 1 match found
+    // Khớp chính xác 1 hồ sơ
     const matchedRow = matches[0];
     const record = {};
     headers.forEach((h, idx) => {
       record[h] = matchedRow[idx] || '';
     });
 
-    // Mask the CCCD in returned student record for display privacy
     const idKey = headers[idColIndex];
     record[idKey] = masked;
+
+    logger.info(`Tìm thấy hồ sơ thành công cho CCCD: ${masked} (Học sinh: ${record['Họ tên'] || 'N/A'})`);
 
     return {
       ok: true,

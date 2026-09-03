@@ -42,8 +42,8 @@ test('SheetService: Xử lý bản ghi trùng lặp (DUPLICATE_ID)', async () =>
     idColIndex: 5
   };
 
-  const originalFetch = sheetService.fetchSheetData;
-  sheetService.fetchSheetData = async () => fakeData;
+  const originalGet = sheetService.getSheetData;
+  sheetService.getSheetData = async () => fakeData;
 
   try {
     const result = await sheetService.lookupByCCCD(duplicateCCCD);
@@ -51,6 +51,6 @@ test('SheetService: Xử lý bản ghi trùng lặp (DUPLICATE_ID)', async () =>
     assert.equal(result.code, 'DUPLICATE_ID');
     assert.equal(result.message, 'Dữ liệu có bản ghi trùng Số định danh cá nhân. Vui lòng liên hệ quản trị viên.');
   } finally {
-    sheetService.fetchSheetData = originalFetch;
+    sheetService.getSheetData = originalGet;
   }
 });

@@ -11,7 +11,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const queryStatus = document.getElementById('queryStatus');
   const resultContent = document.getElementById('resultContent');
 
-  let currentStudentData = null;
+  // Xác định API endpoint (tương thích cả khi chạy qua localhost:3000 hoặc file:// hoặc Live Server)
+  function getApiEndpoint() {
+    if (window.location.protocol === 'file:' || (window.location.port && window.location.port !== '3000')) {
+      return 'http://localhost:3000/api/lookup';
+    }
+    return '/api/lookup';
+  }
 
   // Lắng nghe nhập liệu: chỉ cho phép nhập chữ số & cập nhật bộ đếm
   cccdInput.addEventListener('input', (e) => {
@@ -70,49 +76,64 @@ document.addEventListener('DOMContentLoaded', () => {
     queryStatus.style.borderColor = '#b8daf2';
     queryStatus.style.background = '#eaf5fc';
 
-    try {
-      // 3. Gửi truy vấn bảo mật về máy chủ
-      const response = await fetch('/api/lookup', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ cccd: sanitized })
-      });
+    let lastError = null;
 
-      removeTypingIndicator(typingId);
-      const res = await response.json();
+    // Cơ chế thử lại 1 lần nếu gặp lỗi kết nối tạm thời
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const endpoint = getApiEndpoint();
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ cccd: sanitized })
+        });
 
-      if (response.ok && res.ok && res.student) {
-        // TÌM THẤY HỒ SƠ
-        currentStudentData = res.student;
-        addMessageBubble('bot', 'Đã tìm thấy hồ sơ. Thông tin của bạn như sau:');
-        renderStudentCard(res.student);
-        queryStatus.textContent = `Tìm thấy: ${res.student['Họ tên'] || '1 học sinh'}`;
-        queryStatus.style.borderColor = '#c1e7d2';
-        queryStatus.style.background = '#edfbf3';
-        cccdInput.value = '';
-        charCounter.textContent = '0/12';
-      } else {
-        // KHÔNG TÌM THẤY HOẶC CÓ LỖI TỪ SERVER
-        handleErrorResponse(res, response.status);
+        const res = await response.json();
+
+        removeTypingIndicator(typingId);
+
+        if (response.ok && res.ok && res.student) {
+          // TÌM THẤY HỒ SƠ
+          addMessageBubble('bot', 'Đã tìm thấy hồ sơ. Thông tin của bạn như sau:');
+          renderStudentCard(res.student);
+          queryStatus.textContent = `Tìm thấy: ${res.student['Họ tên'] || '1 học sinh'}`;
+          queryStatus.style.borderColor = '#c1e7d2';
+          queryStatus.style.background = '#edfbf3';
+          cccdInput.value = '';
+          charCounter.textContent = '0/12';
+          setSearchingState(false);
+          return;
+        } else {
+          // Xử lý phản hồi từ server (NOT_FOUND, DUPLICATE_ID, RATE_LIMIT...)
+          handleErrorResponse(res, response.status);
+          setSearchingState(false);
+          return;
+        }
+      } catch (err) {
+        lastError = err;
+        console.warn(`Lần tra cứu ${attempt} thất bại:`, err);
+        if (attempt < 2) {
+          await new Promise(r => setTimeout(r, 400));
+        }
       }
-    } catch (err) {
-      removeTypingIndicator(typingId);
-      console.error('Fetch error:', err);
-      const errMsg = 'Hệ thống tạm thời chưa truy cập được dữ liệu. Vui lòng thử lại sau hoặc liên hệ quản trị viên.';
-      addMessageBubble('bot', errMsg);
-      renderAlert('danger', 'Lỗi kết nối', errMsg);
-      queryStatus.textContent = 'Lỗi kết nối máy chủ';
-      queryStatus.style.borderColor = '#f8c8c8';
-      queryStatus.style.background = '#fdf2f2';
-    } finally {
-      setSearchingState(false);
     }
+
+    // Nếu cả 2 lần đều thất bại do không kết nối được máy chủ
+    removeTypingIndicator(typingId);
+    console.error('Fetch error cuối cùng:', lastError);
+    const errMsg = 'Hệ thống tạm thời chưa truy cập được dữ liệu. Vui lòng thử lại sau hoặc liên hệ quản trị viên.';
+    addMessageBubble('bot', errMsg);
+    renderAlert('danger', 'Lỗi kết nối máy chủ', 'Không thể kết nối đến máy chủ http://localhost:3000. Vui lòng kiểm tra lại địa chỉ trên thanh duyệt web.');
+    queryStatus.textContent = 'Lỗi kết nối máy chủ';
+    queryStatus.style.borderColor = '#f8c8c8';
+    queryStatus.style.background = '#fdf2f2';
+    setSearchingState(false);
   }
 
   /**
-   * Xử lý phản hồi không thành công
+   * Xử lý phản hồi không thành công từ máy chủ
    */
   function handleErrorResponse(res, status) {
     let msg = res.message || 'Không thể thực hiện tra cứu.';
@@ -132,7 +153,7 @@ document.addEventListener('DOMContentLoaded', () => {
       queryStatus.style.borderColor = '#f8c8c8';
       queryStatus.style.background = '#fdf2f2';
     } else if (res.code === 'RATE_LIMIT_EXCEEDED' || status === 429) {
-      msg = res.message || 'Bạn đã thực hiện quá nhiều lượt tra cứu. Vui lòng chờ giây lát.';
+      msg = res.message || 'Bạn đã thực hiện quá nhiều lượt tra cứu. Vui lòng chờ 1 phút rồi thử lại.';
       addMessageBubble('bot', msg);
       renderAlert('warning', 'Giới hạn tra cứu', msg);
       queryStatus.textContent = 'Vượt quá tần suất tra cứu';
